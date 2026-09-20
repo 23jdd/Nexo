@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+
 	"github.com/23jdd/Nexo/protocol/http1"
 	"github.com/23jdd/Nexo/server"
 )
@@ -8,7 +10,8 @@ import (
 func main() {
 	httpServer := server.New()
 	httpServer.HandleFunc("/", func(w *http1.ResponseWriter, r *http1.Request) {
-		w.Header().Set("Connection", "close")
+		name := r.Query("name")
+		fmt.Println("name:" + name)
 		w.Write([]byte(`<html lang="en">
 <head>
     <meta charset="UTF-8">

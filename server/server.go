@@ -55,7 +55,7 @@ func (hs *HttpServer) handler(con net.Conn) {
 	}
 	//fmt.Println(request.String())
 	//err = http1.WriteResponse(con, &http1.Response{})
-	url := request.URL.String()
+	url := request.URL.Path
 	handler := hs.m[url]
 	writer := http1.NewResponseWriter(con, &http1.Response{
 		Protocol:   request.Protocol,

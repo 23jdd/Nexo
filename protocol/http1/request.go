@@ -19,7 +19,6 @@ type Request struct {
 	Body     io.ReadCloser
 }
 
-// GET /users/10 HTTP/1.1\r\n
 func ReadRequest(conn net.Conn) (*Request, error) {
 	req := &Request{}
 	req.Header = make(protocol.Header)
@@ -84,12 +83,18 @@ func readLine(reader io.Reader) (string, error) {
 	return b.String(), nil
 
 }
-func (r Request) String() string {
-	var builder strings.Builder
-	builder.WriteString(fmt.Sprintf("Method:%s\n", r.Method))
-	builder.WriteString(fmt.Sprintf("URL:%s\n", r.URL.String()))
-	for k, v := range r.Header {
-		builder.WriteString(fmt.Sprintf("header %s:%s\n", k, v))
+
+func (req *Request) Query(key string) string {
+	return req.URL.Query().Get(key)
+}
+func (req *Request) DefaultQuery(key string, def string) string {
+	value, ok := req.URL.Query()[key]
+	if !ok {
+		return def
+	} else {
+		return value[0]
 	}
-	return builder.String()
+}
+func (req *Request) QueryS(key string) []string {
+	return req.URL.Query()[key]
 }
