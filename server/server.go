@@ -1,20 +1,25 @@
 package server
 
 import (
-	"fmt"
+	"errors"
+	"io"
 	"log"
 	"net"
 	"strconv"
 
+	"github.com/23jdd/Nexo/protocol"
 	"github.com/23jdd/Nexo/protocol/http1"
 )
 
 type HttpServer struct {
 	lis net.Listener
+	m   map[string]Handler
 }
 
 func New() *HttpServer {
-	return &HttpServer{}
+	return &HttpServer{
+		m: make(map[string]Handler),
+	}
 }
 func (hs *HttpServer) Run(address string, port int) error {
 	host := net.JoinHostPort(address, strconv.Itoa(port))
@@ -34,20 +39,38 @@ func (hs *HttpServer) Run(address string, port int) error {
 			log.Println(err)
 			continue
 		}
-		go handler(con)
+		go hs.handler(con)
 	}
 }
 
 // TODO
-func handler(con net.Conn) {
+func (hs *HttpServer) handler(con net.Conn) {
 	defer con.Close()
-	for {
-		request, err := http1.ReadRequest(con)
-		if err != nil {
+	request, err := http1.ReadRequest(con)
+	if err != nil {
+		if !errors.Is(err, io.EOF) {
 			log.Println(err)
-			break
 		}
-		fmt.Println(request.String())
-		err = http1.WriteResponse(con)
+		return
 	}
+	//fmt.Println(request.String())
+	//err = http1.WriteResponse(con, &http1.Response{})
+	url := request.URL.String()
+	handler := hs.m[url]
+	writer := http1.NewResponseWriter(con, &http1.Response{
+		Protocol:   request.Protocol,
+		Header:     make(protocol.Header),
+		Body:       nil,
+		StatusCode: protocol.StatusOK,
+	})
+	if handler == nil {
+		return
+	}
+	handler(writer, request)
+	writer.Flush()
+}
+
+// TODO
+func match(path string, pattern string) bool {
+	return path == pattern
 }

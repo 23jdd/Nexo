@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/url"
 	"strings"
@@ -13,10 +12,11 @@ import (
 )
 
 type Request struct {
-	Method string
-	URL    *url.URL
-	Header protocol.Header
-	Body   io.ReadCloser
+	Protocol string
+	Method   string
+	URL      *url.URL
+	Header   protocol.Header
+	Body     io.ReadCloser
 }
 
 // GET /users/10 HTTP/1.1\r\n
@@ -37,7 +37,7 @@ func ReadRequest(conn net.Conn) (*Request, error) {
 	if err != nil {
 		return nil, err
 	}
-	log.Println(prt)
+	req.Protocol = prt
 	for {
 		line, err := readLine(conn)
 		if err != nil {
@@ -59,19 +59,25 @@ func ReadRequest(conn net.Conn) (*Request, error) {
 
 func readLine(reader io.Reader) (string, error) {
 	buff := make([]byte, 1)
-	s1 := false
+	sawCarriageReturn := false
 	var b bytes.Buffer
 	for {
 		_, err := reader.Read(buff)
 		if err != nil {
 			return "", err
 		}
-		if buff[0] == '\n' {
-			s1 = true
-			continue
+
+		if sawCarriageReturn {
+			if buff[0] == '\n' {
+				break
+			}
+			b.WriteByte('\r')
+			sawCarriageReturn = false
 		}
-		if s1 && buff[0] == '\r' {
-			break
+
+		if buff[0] == '\r' {
+			sawCarriageReturn = true
+			continue
 		}
 		b.WriteByte(buff[0])
 	}
