@@ -1,9 +1,12 @@
 package server
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"strconv"
+
+	"github.com/23jdd/Nexo/protocol/http1"
 )
 
 type HttpServer struct {
@@ -37,5 +40,14 @@ func (hs *HttpServer) Run(address string, port int) error {
 
 // TODO
 func handler(con net.Conn) {
-
+	defer con.Close()
+	for {
+		request, err := http1.ReadRequest(con)
+		if err != nil {
+			log.Println(err)
+			break
+		}
+		fmt.Println(request.String())
+		err = http1.WriteResponse(con)
+	}
 }
