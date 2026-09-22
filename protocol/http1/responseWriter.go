@@ -31,6 +31,15 @@ func (rw *ResponseWriter) Header() protocol.Header {
 	return rw.response.Header
 }
 
+// Trailer returns fields written after the final chunk. Transfer-Encoding must
+// be set to chunked for trailers to be sent.
+func (rw *ResponseWriter) Trailer() protocol.Header {
+	if rw.response.Trailer == nil {
+		rw.response.Trailer = make(protocol.Header)
+	}
+	return rw.response.Trailer
+}
+
 // StatusCode sets the response status. Changes after Flush have no effect.
 func (rw *ResponseWriter) StatusCode(status int) {
 	rw.response.StatusCode = status

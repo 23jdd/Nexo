@@ -70,6 +70,59 @@ func TestRequestAndResponseRoundTrip(t *testing.T) {
 	}
 }
 
+func TestChunkedRequestWithExtensionAndTrailer(t *testing.T) {
+	wire := "POST /upload HTTP/1.1\r\nTransfer-Encoding: chunked\r\nTrailer: X-Checksum\r\n\r\n" +
+		"5;name=value\r\nhello\r\n6\r\n world\r\n0\r\nX-Checksum: ok\r\n\r\n" +
+		"GET /next HTTP/1.1\r\n\r\n"
+	reader := bufio.NewReader(strings.NewReader(wire))
+	req, err := ReadRequest(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(req.Body)
+	if err != nil || string(body) != "hello world" {
+		t.Fatalf("body = %q, err = %v", body, err)
+	}
+	if got := req.Trailer.Get("x-checksum"); got != "ok" {
+		t.Fatalf("trailer = %q", got)
+	}
+	next, err := ReadRequest(reader)
+	if err != nil || next.URL.Path != "/next" {
+		t.Fatalf("next request = %#v, err = %v", next, err)
+	}
+}
+
+func TestChunkedResponseRoundTrip(t *testing.T) {
+	var wire bytes.Buffer
+	resp := &Response{
+		Protocol: "HTTP/1.1", StatusCode: protocol.StatusOK,
+		Header:  protocol.Header{"Transfer-Encoding": {"chunked"}},
+		Trailer: protocol.Header{"X-Checksum": {"ok"}},
+		Body:    io.NopCloser(strings.NewReader("hello")),
+	}
+	if err := WriteResponse(&wire, resp); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ReadResponse(bufio.NewReader(&wire))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(parsed.Body)
+	if err != nil || string(body) != "hello" {
+		t.Fatalf("body = %q, err = %v", body, err)
+	}
+	if got := parsed.Trailer.Get("X-Checksum"); got != "ok" {
+		t.Fatalf("trailer = %q", got)
+	}
+}
+
+func TestRejectsAmbiguousMessageFraming(t *testing.T) {
+	wire := "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 3\r\n\r\n"
+	if _, err := ReadRequest(strings.NewReader(wire)); err == nil {
+		t.Fatal("ReadRequest() accepted Transfer-Encoding with Content-Length")
+	}
+}
+
 func mustURL(t *testing.T, raw string) *url.URL {
 	t.Helper()
 	u, err := url.Parse(raw)

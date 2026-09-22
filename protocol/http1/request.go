@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"strconv"
 	"strings"
 
 	"github.com/23jdd/Nexo/protocol"
@@ -17,6 +16,7 @@ type Request struct {
 	Method   string
 	URL      *url.URL
 	Header   protocol.Header
+	Trailer  protocol.Header
 	Body     io.ReadCloser
 }
 
@@ -60,14 +60,23 @@ func ReadRequest(reader io.Reader) (*Request, error) {
 		}
 		req.Header.Add(key, value)
 	}
-	length := int64(0)
-	if value := req.Header.Get("Content-Length"); value != "" {
-		length, err = strconv.ParseInt(value, 10, 64)
-		if err != nil || length < 0 {
-			return nil, fmt.Errorf("invalid Content-Length %q", value)
-		}
+	chunked, err := isChunked(req.Header)
+	if err != nil {
+		return nil, err
 	}
-	req.Body = io.NopCloser(io.LimitReader(br, length))
+	length, hasLength, err := contentLength(req.Header)
+	if err != nil {
+		return nil, err
+	}
+	if chunked && hasLength {
+		return nil, fmt.Errorf("both Transfer-Encoding and Content-Length are set")
+	}
+	req.Trailer = make(protocol.Header)
+	if chunked {
+		req.Body = newChunkedReader(br, req.Trailer)
+	} else {
+		req.Body = io.NopCloser(io.LimitReader(br, length))
+	}
 	return req, nil
 }
 
@@ -99,8 +108,15 @@ func WriteRequest(w io.Writer, req *Request) error {
 	if req.URL.Host != "" && req.Header.Get("Host") == "" {
 		req.Header.Set("Host", req.URL.Host)
 	}
-	if len(body) > 0 && req.Header.Get("Content-Length") == "" {
-		req.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	chunked, err := isChunked(req.Header)
+	if err != nil {
+		return err
+	}
+	if chunked {
+		req.Header.Del("Content-Length")
+		announceTrailers(req.Header, req.Trailer)
+	} else if len(body) > 0 && req.Header.Get("Content-Length") == "" {
+		req.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
 	}
 	bw := bufio.NewWriter(w)
 	if _, err = fmt.Fprintf(bw, "%s %s %s\r\n", req.Method, target, proto); err != nil {
@@ -113,8 +129,12 @@ func WriteRequest(w io.Writer, req *Request) error {
 			}
 		}
 	}
-	if _, err = io.WriteString(bw, "\r\n"); err == nil && len(body) > 0 {
-		_, err = bw.Write(body)
+	if _, err = io.WriteString(bw, "\r\n"); err == nil {
+		if chunked {
+			err = writeChunked(bw, body, req.Trailer)
+		} else if len(body) > 0 {
+			_, err = bw.Write(body)
+		}
 	}
 	if err != nil {
 		return err

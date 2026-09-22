@@ -14,6 +14,7 @@ type Response struct {
 	Protocol   string
 	StatusCode int
 	Header     protocol.Header
+	Trailer    protocol.Header
 	Body       io.ReadCloser
 }
 
@@ -50,14 +51,23 @@ func ReadResponse(reader io.Reader) (*Response, error) {
 		}
 		resp.Header.Add(strings.TrimSpace(field[0]), strings.TrimSpace(field[1]))
 	}
-	length := int64(0)
-	if value := resp.Header.Get("Content-Length"); value != "" {
-		length, err = strconv.ParseInt(value, 10, 64)
-		if err != nil || length < 0 {
-			return nil, fmt.Errorf("invalid Content-Length %q", value)
-		}
+	chunked, err := isChunked(resp.Header)
+	if err != nil {
+		return nil, err
 	}
-	resp.Body = io.NopCloser(io.LimitReader(br, length))
+	length, hasLength, err := contentLength(resp.Header)
+	if err != nil {
+		return nil, err
+	}
+	if chunked && hasLength {
+		return nil, fmt.Errorf("both Transfer-Encoding and Content-Length are set")
+	}
+	resp.Trailer = make(protocol.Header)
+	if chunked {
+		resp.Body = newChunkedReader(br, resp.Trailer)
+	} else {
+		resp.Body = io.NopCloser(io.LimitReader(br, length))
+	}
 	return resp, nil
 }
 
@@ -76,8 +86,15 @@ func WriteResponse(w io.Writer, response *Response) error {
 	if response.Header == nil {
 		response.Header = make(protocol.Header)
 	}
-	if response.Header.Get("Content-Length") == "" {
-		response.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	chunked, err := isChunked(response.Header)
+	if err != nil {
+		return err
+	}
+	if chunked {
+		response.Header.Del("Content-Length")
+		announceTrailers(response.Header, response.Trailer)
+	} else if response.Header.Get("Content-Length") == "" {
+		response.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
 	}
 	proto := response.Protocol
 	if proto == "" {
@@ -94,8 +111,12 @@ func WriteResponse(w io.Writer, response *Response) error {
 			}
 		}
 	}
-	if _, err = io.WriteString(bw, "\r\n"); err == nil && len(body) > 0 {
-		_, err = bw.Write(body)
+	if _, err = io.WriteString(bw, "\r\n"); err == nil {
+		if chunked {
+			err = writeChunked(bw, body, response.Trailer)
+		} else if len(body) > 0 {
+			_, err = bw.Write(body)
+		}
 	}
 	if err != nil {
 		return err
