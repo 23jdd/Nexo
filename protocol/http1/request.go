@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/url"
 	"strings"
 
@@ -183,4 +185,44 @@ func (req *Request) DefaultQuery(key string, def string) string {
 }
 func (req *Request) QueryS(key string) []string {
 	return req.URL.Query()[key]
+}
+
+func (req *Request) Cookies() ([]protocol.Cookie, error) {
+	var cookies []protocol.Cookie
+	for _, line := range req.Header.Values("Cookie") {
+		parsed, err := protocol.ParseCookieHeader(line)
+		if err != nil {
+			return nil, err
+		}
+		cookies = append(cookies, parsed...)
+	}
+	return cookies, nil
+}
+
+func (req *Request) Cookie(name string) (*protocol.Cookie, error) {
+	cookies, err := req.Cookies()
+	if err != nil {
+		return nil, err
+	}
+	for index := range cookies {
+		if cookies[index].Name == name {
+			return &cookies[index], nil
+		}
+	}
+	return nil, fmt.Errorf("cookie %q not found", name)
+}
+
+func (req *Request) MultipartReader() (*multipart.Reader, error) {
+	mediaType, parameters, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
+	if err != nil {
+		return nil, err
+	}
+	if !strings.EqualFold(mediaType, "multipart/form-data") {
+		return nil, fmt.Errorf("Content-Type is %q, not multipart/form-data", mediaType)
+	}
+	boundary := parameters["boundary"]
+	if boundary == "" {
+		return nil, fmt.Errorf("multipart boundary is missing")
+	}
+	return multipart.NewReader(req.Body, boundary), nil
 }

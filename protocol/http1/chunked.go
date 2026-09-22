@@ -99,13 +99,7 @@ func writeChunked(w *bufio.Writer, body []byte, trailer protocol.Header) error {
 		if n > chunkSize {
 			n = chunkSize
 		}
-		if _, err := fmt.Fprintf(w, "%x\r\n", n); err != nil {
-			return err
-		}
-		if _, err := w.Write(body[:n]); err != nil {
-			return err
-		}
-		if _, err := io.WriteString(w, "\r\n"); err != nil {
+		if err := writeChunk(w, body[:n]); err != nil {
 			return err
 		}
 		body = body[n:]
@@ -119,6 +113,20 @@ func writeChunked(w *bufio.Writer, body []byte, trailer protocol.Header) error {
 				return err
 			}
 		}
+	}
+	_, err := io.WriteString(w, "\r\n")
+	return err
+}
+
+func writeChunk(w *bufio.Writer, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	if _, err := fmt.Fprintf(w, "%x\r\n", len(data)); err != nil {
+		return err
+	}
+	if _, err := w.Write(data); err != nil {
+		return err
 	}
 	_, err := io.WriteString(w, "\r\n")
 	return err

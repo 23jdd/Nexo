@@ -18,6 +18,31 @@ type Response struct {
 	Body       io.ReadCloser
 }
 
+func (response *Response) Cookies() ([]protocol.Cookie, error) {
+	var cookies []protocol.Cookie
+	for _, line := range response.Header.Values("Set-Cookie") {
+		cookie, err := protocol.ParseSetCookie(line)
+		if err != nil {
+			return nil, err
+		}
+		cookies = append(cookies, *cookie)
+	}
+	return cookies, nil
+}
+
+func (response *Response) Cookie(name string) (*protocol.Cookie, error) {
+	cookies, err := response.Cookies()
+	if err != nil {
+		return nil, err
+	}
+	for index := range cookies {
+		if cookies[index].Name == name {
+			return &cookies[index], nil
+		}
+	}
+	return nil, fmt.Errorf("cookie %q not found", name)
+}
+
 // HTTP/1.1 200 OK\r\n
 func ReadResponse(reader io.Reader) (*Response, error) {
 	br, ok := reader.(*bufio.Reader)

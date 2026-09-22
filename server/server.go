@@ -8,14 +8,18 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/23jdd/Nexo/protocol"
 	"github.com/23jdd/Nexo/protocol/http1"
 )
 
 type HttpServer struct {
-	lis net.Listener
-	m   map[string]map[string]Handler
+	lis          net.Listener
+	m            map[string]map[string]Handler
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+	IdleTimeout  time.Duration
 }
 
 func New() *HttpServer {
@@ -55,13 +59,25 @@ func (hs *HttpServer) Serve(lis net.Listener) error {
 func (hs *HttpServer) handler(con net.Conn) {
 	defer con.Close()
 	reader := bufio.NewReader(con)
+	firstRequest := true
 	for {
+		readTimeout := hs.IdleTimeout
+		if firstRequest || readTimeout == 0 {
+			readTimeout = hs.ReadTimeout
+		}
+		if readTimeout > 0 {
+			_ = con.SetReadDeadline(time.Now().Add(readTimeout))
+		}
 		request, err := http1.ReadRequest(reader)
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
 				log.Println(err)
 			}
 			return
+		}
+		firstRequest = false
+		if hs.WriteTimeout > 0 {
+			_ = con.SetWriteDeadline(time.Now().Add(hs.WriteTimeout))
 		}
 		path := request.URL.Path
 		handler := hs.lookup(request.Method, path)
@@ -81,7 +97,7 @@ func (hs *HttpServer) handler(con net.Conn) {
 		if strings.EqualFold(request.Header.Get("Connection"), "close") {
 			writer.Header().Set("Connection", "close")
 		}
-		if err := writer.Flush(); err != nil {
+		if err := writer.Finish(); err != nil {
 			return
 		}
 		if strings.EqualFold(request.Header.Get("Connection"), "close") || request.Protocol == "HTTP/1.0" {

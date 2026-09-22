@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/url"
 	"strings"
@@ -123,6 +124,100 @@ func TestRejectsAmbiguousMessageFraming(t *testing.T) {
 	}
 }
 
+func TestResponseWriterStreamsChunks(t *testing.T) {
+	var wire bytes.Buffer
+	writer := NewResponseWriterFor(&wire, &Response{
+		Protocol: "HTTP/1.1", StatusCode: protocol.StatusOK, Header: make(protocol.Header),
+	})
+	writer.Trailer().Set("X-Final", "pending")
+	if err := writer.Write([]byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	partial := wire.String()
+	if !strings.Contains(partial, "Transfer-Encoding: chunked\r\n") || !strings.Contains(partial, "5\r\nfirst\r\n") {
+		t.Fatalf("partial response = %q", partial)
+	}
+	if strings.Contains(partial, "\r\n0\r\n") {
+		t.Fatalf("Flush ended the stream: %q", partial)
+	}
+	writer.Trailer().Set("X-Final", "done")
+	if err := writer.Write([]byte("second")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ReadResponse(bufio.NewReader(bytes.NewReader(wire.Bytes())))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(parsed.Body)
+	if err != nil || string(body) != "firstsecond" {
+		t.Fatalf("body = %q, err = %v", body, err)
+	}
+	if got := parsed.Trailer.Get("X-Final"); got != "done" {
+		t.Fatalf("trailer = %q", got)
+	}
+}
+
+func TestRequestCookiesAndMultipart(t *testing.T) {
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	field, err := mw.CreateFormField("username")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.WriteString(field, "sam")
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := &Request{
+		Header: protocol.Header{
+			"Content-Type": {mw.FormDataContentType()},
+			"Cookie":       {"session=abc; theme=dark"},
+		},
+		Body: io.NopCloser(bytes.NewReader(body.Bytes())),
+	}
+	cookie, err := req.Cookie("theme")
+	if err != nil || cookie.Value != "dark" {
+		t.Fatalf("Cookie() = %#v, %v", cookie, err)
+	}
+	mr, err := req.MultipartReader()
+	if err != nil {
+		t.Fatal(err)
+	}
+	part, err := mr.NextPart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := io.ReadAll(part)
+	if err != nil || part.FormName() != "username" || string(value) != "sam" {
+		t.Fatalf("multipart part name=%q value=%q err=%v", part.FormName(), value, err)
+	}
+}
+
+func TestResponseWriterSetCookie(t *testing.T) {
+	var wire bytes.Buffer
+	writer := NewResponseWriterFor(&wire, &Response{Protocol: "HTTP/1.1", StatusCode: protocol.StatusOK, Header: make(protocol.Header)})
+	if err := writer.SetCookie(protocol.Cookie{Name: "session", Value: "abc", HttpOnly: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	response, err := ReadResponse(bufio.NewReader(&wire))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie, err := response.Cookie("session")
+	if err != nil || cookie.Value != "abc" || !cookie.HttpOnly {
+		t.Fatalf("Cookie() = %#v, %v", cookie, err)
+	}
+}
+
 func mustURL(t *testing.T, raw string) *url.URL {
 	t.Helper()
 	u, err := url.Parse(raw)
@@ -150,7 +245,7 @@ func TestResponseWriterWritesValidStatusLine(t *testing.T) {
 			done <- err
 			return
 		}
-		if err := writer.Flush(); err != nil {
+		if err := writer.Finish(); err != nil {
 			done <- err
 			return
 		}
