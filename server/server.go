@@ -1,11 +1,13 @@
 package server
 
 import (
+	"bufio"
 	"errors"
 	"io"
 	"log"
 	"net"
 	"strconv"
+	"strings"
 
 	"github.com/23jdd/Nexo/protocol"
 	"github.com/23jdd/Nexo/protocol/http1"
@@ -13,12 +15,12 @@ import (
 
 type HttpServer struct {
 	lis net.Listener
-	m   map[string]Handler
+	m   map[string]map[string]Handler
 }
 
 func New() *HttpServer {
 	return &HttpServer{
-		m: make(map[string]Handler),
+		m: make(map[string]map[string]Handler),
 	}
 }
 func (hs *HttpServer) Run(address string, port int) error {
@@ -27,50 +29,81 @@ func (hs *HttpServer) Run(address string, port int) error {
 	if err != nil {
 		return err
 	}
+	return hs.Serve(lis)
+}
+
+// Serve accepts HTTP/1.x connections from lis until the listener is closed.
+func (hs *HttpServer) Serve(lis net.Listener) error {
+	hs.lis = lis
 	defer func() {
-		err := lis.Close()
-		if err != nil {
+		if err := lis.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 			log.Println(err)
 		}
 	}()
 	for {
 		con, err := lis.Accept()
 		if err != nil {
-			log.Println(err)
-			continue
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			return err
 		}
 		go hs.handler(con)
 	}
 }
 
-// TODO
 func (hs *HttpServer) handler(con net.Conn) {
 	defer con.Close()
-	request, err := http1.ReadRequest(con)
-	if err != nil {
-		if !errors.Is(err, io.EOF) {
-			log.Println(err)
+	reader := bufio.NewReader(con)
+	for {
+		request, err := http1.ReadRequest(reader)
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				log.Println(err)
+			}
+			return
 		}
-		return
+		path := request.URL.Path
+		handler := hs.lookup(request.Method, path)
+		writer := http1.NewResponseWriter(con, &http1.Response{
+			Protocol: request.Protocol, Header: make(protocol.Header), StatusCode: protocol.StatusOK,
+		})
+		if handler == nil {
+			writer.StatusCode(protocol.StatusNotFound)
+			_ = writer.Write([]byte("404 page not found\n"))
+		} else {
+			handler(writer, request)
+		}
+		// Consume any unread request bytes before parsing the next message on a
+		// persistent connection.
+		_, _ = io.Copy(io.Discard, request.Body)
+		_ = request.Body.Close()
+		if strings.EqualFold(request.Header.Get("Connection"), "close") {
+			writer.Header().Set("Connection", "close")
+		}
+		if err := writer.Flush(); err != nil {
+			return
+		}
+		if strings.EqualFold(request.Header.Get("Connection"), "close") || request.Protocol == "HTTP/1.0" {
+			return
+		}
 	}
-	//fmt.Println(request.String())
-	//err = http1.WriteResponse(con, &http1.Response{})
-	url := request.URL.Path
-	handler := hs.m[url]
-	writer := http1.NewResponseWriter(con, &http1.Response{
-		Protocol:   request.Protocol,
-		Header:     make(protocol.Header),
-		Body:       nil,
-		StatusCode: protocol.StatusOK,
-	})
-	if handler == nil {
-		return
-	}
-	handler(writer, request)
-	writer.Flush()
 }
 
-// TODO
-func match(path string, pattern string) bool {
-	return path == pattern
+func (hs *HttpServer) lookup(method, path string) Handler {
+	if methods := hs.m[path]; methods != nil {
+		if handler := methods[method]; handler != nil {
+			return handler
+		}
+		return methods[""]
+	}
+	return nil
+}
+
+// Close stops accepting new connections.
+func (hs *HttpServer) Close() error {
+	if hs.lis == nil {
+		return nil
+	}
+	return hs.lis.Close()
 }
